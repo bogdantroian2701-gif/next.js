@@ -251,11 +251,13 @@ type JSONValue =
   | JSONValue[]
   | { [k: string]: JSONValue }
 
+// At the moment, Turbopack options must be JSON-serializable, so restrict values.
+export type TurbopackLoaderOptions = Record<string, JSONValue>
+
 export type TurbopackLoaderItem =
   | string
   | {
       loader: string
-      // At the moment, Turbopack options must be JSON-serializable, so restrict values.
       options?: Record<string, JSONValue>
     }
 

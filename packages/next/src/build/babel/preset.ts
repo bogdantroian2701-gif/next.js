@@ -42,7 +42,21 @@ type NextBabelPresetOptions = {
   'class-properties'?: any
   'transform-runtime'?: any
   'styled-jsx'?: StyledJsxBabelOptions
+  /**
+   * `syntax-typescript` is a subset of `preset-typescript`.
+   *
+   * - When babel is used in "standalone" mode (e.g. alongside SWC when using react-compiler or
+   *   turbopack) we'll prefer the options in 'syntax-typescript`, and fall back to
+   *  `preset-typescript`.
+   *
+   * - When babel is used in "default" mode (e.g. with a babel config in webpack) we'll prefer
+   */
   'preset-typescript'?: any
+  'syntax-typescript'?: {
+    disallowAmbiguousJSXLike?: boolean
+    dts?: boolean
+    isTSX?: boolean
+  }
 }
 
 type BabelPreset = {
@@ -57,12 +71,104 @@ function supportsStaticESM(caller: any): boolean {
   return !!caller?.supportsStaticESM
 }
 
+/**
+ * HACK: A drop-in replacement for `@babel/preset-typescript` that only enables
+ * `@babel/plugin-syntax-typescript` and does not transform the typescript.
+ *
+ * This is used for Turbopack where we'd rather let SWC handle the transforms.
+ *
+ * This should match the logic/behavior here:
+ * https://github.com/babel/babel/blob/7f57d3a2e97b7e2800fb82cff9284a3591377971/packages/babel-preset-typescript/src/index.ts#L63
+ */
+function presetTypescriptSyntaxOnly(_api: unknown, options: any) {
+  const { allExtensions, ignoreExtensions } = options
+  const disableExtensionDetect = allExtensions || ignoreExtensions
+
+  function getPlugins(isTSX: boolean, disallowAmbiguousJSXLike: boolean) {
+    return [
+      require('next/dist/compiled/babel/plugin-syntax-typescript') as typeof import('next/dist/compiled/babel/plugin-syntax-typescript'),
+      {
+        isTSX,
+        disallowAmbiguousJSXLike,
+        ...(options['syntax-typescript'] ?? options['preset-typescript']),
+      },
+    ]
+  }
+
+  return {
+    plugins: [],
+    overrides: disableExtensionDetect
+      ? [
+          {
+            plugins: getPlugins(
+              options.isTSX,
+              options.disallowAmbiguousJSXLike
+            ),
+          },
+        ]
+      : // Only set 'test' if explicitly requested, since it requires that
+        // Babel is being called with a filename.
+        [
+          {
+            test: /\.ts$/,
+            plugins: getPlugins(false, false),
+          },
+          {
+            test: /\.mts$/,
+            sourceType: 'module',
+            plugins: getPlugins(false, true),
+          },
+          {
+            test: /\.cts$/,
+            sourceType: 'unambiguous',
+            plugins: getPlugins(false, true),
+          },
+          {
+            test: /\.tsx$/,
+            plugins: getPlugins(true, false),
+          },
+        ],
+  }
+}
+
 export default (
   api: any,
   options: NextBabelPresetOptions = {}
 ): BabelPreset => {
-  const supportsESM = api.caller(supportsStaticESM)
+  const isStandalone = api.caller(
+    // NOTE: `transformMode` may be undefined if the user configured `babel-loader` themselves. In
+    // this case, we should assume we're in 'default' mode.
+    (caller: any) => caller.transformMode === 'standalone'
+  )
   const isServer = api.caller((caller: any) => !!caller && caller.isServer)
+
+  // syntax plugins that are used in both standalone and default modes
+  const sharedSyntaxPlugins = [
+    require('next/dist/compiled/babel/plugin-syntax-dynamic-import') as typeof import('next/dist/compiled/babel/plugin-syntax-dynamic-import'),
+    [
+      require('next/dist/compiled/babel/plugin-syntax-import-attributes') as typeof import('next/dist/compiled/babel/plugin-syntax-import-attributes'),
+      {
+        deprecatedAssertSyntax: true,
+      },
+    ],
+    (isStandalone || isServer) &&
+      (require('next/dist/compiled/babel/plugin-syntax-bigint') as typeof import('next/dist/compiled/babel/plugin-syntax-bigint')),
+  ]
+
+  if (isStandalone) {
+    // Just enable a few syntax plugins, we'll let SWC handle any of the downleveling or
+    // next.js-specific transforms.
+    return {
+      sourceType: 'unambiguous',
+      presets: [presetTypescriptSyntaxOnly],
+      plugins: [
+        require('next/dist/compiled/babel/plugin-syntax-jsx') as typeof import('next/dist/compiled/babel/plugin-syntax-jsx'),
+        ...sharedSyntaxPlugins,
+      ],
+    }
+  }
+
+  const supportsESM = api.caller(supportsStaticESM)
   const isCallerDevelopment = api.caller((caller: any) => caller?.isDev)
 
   // Look at external intent if used without a caller (e.g. via Jest):
@@ -133,10 +239,14 @@ export default (
       ],
       [
         require('next/dist/compiled/babel/preset-typescript') as typeof import('next/dist/compiled/babel/preset-typescript'),
-        { allowNamespaces: true, ...options['preset-typescript'] },
+        {
+          allowNamespaces: true,
+          ...(options['preset-typescript'] || options['syntax-typescript']),
+        },
       ],
     ],
     plugins: [
+      ...sharedSyntaxPlugins,
       !useJsxRuntime && [
         require('./plugins/jsx-pragma') as typeof import('./plugins/jsx-pragma'),
         {
@@ -154,13 +264,6 @@ export default (
         {
           // only optimize hook functions imported from React/Preact
           lib: true,
-        },
-      ],
-      require('next/dist/compiled/babel/plugin-syntax-dynamic-import') as typeof import('next/dist/compiled/babel/plugin-syntax-dynamic-import'),
-      [
-        require('next/dist/compiled/babel/plugin-syntax-import-attributes') as typeof import('next/dist/compiled/babel/plugin-syntax-import-attributes'),
-        {
-          deprecatedAssertSyntax: true,
         },
       ],
       require('./plugins/react-loadable-plugin') as typeof import('./plugins/react-loadable-plugin'),
@@ -207,8 +310,6 @@ export default (
           removeImport: true,
         },
       ],
-      isServer &&
-        (require('next/dist/compiled/babel/plugin-syntax-bigint') as typeof import('next/dist/compiled/babel/plugin-syntax-bigint')),
       // Always compile numeric separator because the resulting number is
       // smaller.
       require('next/dist/compiled/babel/plugin-proposal-numeric-separator') as typeof import('next/dist/compiled/babel/plugin-proposal-numeric-separator'),
