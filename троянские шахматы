@@ -1,0 +1,636 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Chess } from "chess.js";
+import { Chessboard } from "react-chessboard";
+
+// ────────────────────────────────────────────────────────────────────────────────
+// TROJAN CHESS (import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Chess } from "chess.js";
+import { Chessboard } from "react-chessboard";
+
+// ────────────────────────────────────────────────────────────────────────────────
+// TROJAN CHESS (троянские шахматы)
+// A free-to-play chess MVP with local play, a simple bot, and free puzzles
+// (embedded from Lichess). Built as a single-file React component.
+// ────────────────────────────────────────────────────────────────────────────────
+
+export default function TrojanChess() {
+  const [tab, setTab] = useState("play"); // play | bot | puzzles
+  const [game, setGame] = useState(() => new Chess());
+  const [orientation, setOrientation] = useState("white");
+  const [fen, setFen] = useState("start");
+  const [moveHistory, setMoveHistory] = useState<string[]>([]);
+  const [status, setStatus] = useState("Welcome! Create or load a game.");
+  const [botThinking, setBotThinking] = useState(false);
+  const [botSide, setBotSide] = useState<"white" | "black">("black");
+  const [promotionPiece, setPromotionPiece] = useState("q");
+
+  // Reset game when switching tabs that involve gameplay
+  useEffect(() => {
+    if (tab === "play" || tab === "bot") {
+      const g = new Chess();
+      setGame(g);
+      setFen(g.fen());
+      setMoveHistory([]);
+      setStatus("New game started.");
+    }
+  }, [tab]);
+
+  // ── Helpers ──────────────────────────────────────────────────────────────────
+  function calcStatus(g: any) {
+    if (g.isCheckmate()) return "Checkmate! " + (g.turn() === "w" ? "Black" : "White") + " wins.";
+    if (g.isDraw()) return "Draw.";
+    if (g.isStalemate()) return "Stalemate.";
+    if (g.isThreefoldRepetition()) return "Draw by repetition.";
+    if (g.isInsufficientMaterial()) return "Draw by insufficient material.";
+    return (g.turn() === "w" ? "White" : "Black") + (g.inCheck() ? " to move (in check)." : " to move.");
+  }
+
+  function safeGameMutate(modifier: (g: any) => void) {
+    setGame((g: any) => {
+      const newGame = new Chess(g.fen());
+      modifier(newGame);
+      setFen(newGame.fen());
+      setMoveHistory(newGame.history());
+      setStatus(calcStatus(newGame));
+      return newGame;
+    });
+  }
+
+  // ── Player vs Player (same device) move handler ──────────────────────────────
+  function onDrop(sourceSquare: string, targetSquare: string, piece: string) {
+    let move: any = null;
+    safeGameMutate((g) => {
+      move = g.move({ from: sourceSquare, to: targetSquare, promotion: promotionPiece });
+    });
+    return move !== null;
+  }
+
+  // ── Very simple BOT (greedy capture; otherwise random legal move) ────────────
+  function chooseBotMove(g: any) {
+    const moves = g.moves({ verbose: true });
+    if (moves.length === 0) return null;
+
+    // Greedy capture first
+    const captureMoves = moves.filter((m: any) => m.flags.includes("c") || m.flags.includes("e"));
+
+    const scorePiece = (p: string) => {
+      const map: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+      return map[p.toLowerCase()] ?? 0;
+    };
+
+    if (captureMoves.length) {
+      captureMoves.sort((a: any, b: any) => (scorePiece((b.captured || "")[0]) - scorePiece((a.captured || "")[0])));
+      return captureMoves[0];
+    }
+
+    // Otherwise random legal
+    return moves[Math.floor(Math.random() * moves.length)];
+  }
+
+  async function onPlayerMoveVsBot(sourceSquare: string, targetSquare: string, piece: string) {
+    let humanMoveOk = false;
+    safeGameMutate((g) => {
+      const move = g.move({ from: sourceSquare, to: targetSquare, promotion: promotionPiece });
+      humanMoveOk = !!move;
+    });
+
+    if (!humanMoveOk) return false;
+
+    // Trigger bot if game isn't over and it's the bot's turn
+    setTimeout(() => {
+      setBotThinking(true);
+      setTimeout(() => {
+        safeGameMutate((g) => {
+          if (g.isGameOver()) return;
+          if ((botSide === "white" && g.turn() !== "w") || (botSide === "black" && g.turn() !== "b")) return;
+          const move = chooseBotMove(g);
+          if (move) g.move(move);
+        });
+        setBotThinking(false);
+      }, 200); // tiny delay for UX
+    }, 50);
+
+    return true;
+  }
+
+  // ── UI building blocks ───────────────────────────────────────────────────────
+  const TabButton = ({ id, children }: { id: string; children: any }) => (
+    <button
+      onClick={() => setTab(id)}
+      className={`px-4 py-2 rounded-2xl text-sm font-medium border transition shadow-sm mr-2 mb-2 ${
+        tab === id ? "bg-black text-white" : "bg-white hover:bg-gray-100"
+      }`}
+    >
+      {children}
+    </button>
+  );
+
+  const Pill = ({ children }: { children: any }) => (
+    <span className="inline-block px-2 py-1 rounded-xl text-xs bg-gray-100 border">{children}</span>
+  );
+
+  const MoveList = () => {
+    const pairs: string[][] = [];
+    for (let i = 0; i < moveHistory.length; i += 2) {
+      pairs.push([moveHistory[i] ?? "", moveHistory[i + 1] ?? ""]);
+    }
+    return (
+      <div className="h-64 overflow-auto p-3 bg-white rounded-2xl border shadow-sm text-sm">
+        <div className="grid grid-cols-3 gap-2">
+          {pairs.map((p, idx) => (
+            <React.Fragment key={idx}>
+              <div className="text-gray-500">{idx + 1}.</div>
+              <div>{p[0]}</div>
+              <div>{p[1]}</div>
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const Controls = ({ vsBot = false }: { vsBot?: boolean }) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-100"
+        onClick={() => {
+          const g = new Chess();
+          setGame(g);
+          setFen(g.fen());
+          setMoveHistory([]);
+          setStatus("New game started.");
+        }}
+      >
+        New game
+      </button>
+      <button
+        className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-100"
+        onClick={() => {
+          safeGameMutate((g) => g.undo());
+        }}
+      >
+        Undo
+      </button>
+      <button
+        className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-100"
+        onClick={() => setOrientation((o) => (o === "white" ? "black" : "white"))}
+      >
+        Flip board
+      </button>
+      <label className="px-3 py-2 rounded-xl bg-white border shadow-sm">
+        Promotion
+        <select
+          value={promotionPiece}
+          onChange={(e) => setPromotionPiece(e.target.value)}
+          className="ml-2 bg-transparent outline-none"
+        >
+          <option value="q">Queen</option>
+          <option value="r">Rook</option>
+          <option value="b">Bishop</option>
+          <option value="n">Knight</option>
+        </select>
+      </label>
+      {vsBot && (
+        <label className="px-3 py-2 rounded-xl bg-white border shadow-sm">
+          Bot plays
+          <select
+            value={botSide}
+            onChange={(e) => setBotSide(e.target.value as any)}
+            className="ml-2 bg-transparent outline-none"
+          >
+            <option value="black">Black</option>
+            <option value="white">White</option>
+          </select>
+        </label>
+      )}
+      <div className="ml-auto"><Pill>{status}</Pill>{vsBot && botThinking && <Pill>Bot thinking…</Pill>}</div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white text-gray-900 antialiased p-4">
+      <div className="max-w-6xl mx-auto">
+        {/* Header */}
+        <header className="flex flex-wrap items-center justify-between gap-3 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-black text-white grid place-items-center text-xl">♞</div>
+            <div>
+              <h1 className="text-2xl font-bold">троянские шахматы</h1>
+              <p className="text-sm text-gray-500">Free-to-play chess • Local play • Simple bot • Lichess puzzles</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <TabButton id="play">Play (2 players)</TabButton>
+            <TabButton id="bot">Play vs Bot</TabButton>
+            <TabButton id="puzzles">Puzzles</TabButton>
+          </div>
+        </header>
+
+        {/* Content */}
+        {tab === "play" && (
+          <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white rounded-3xl p-4 border shadow-sm">
+              <Controls />
+              <div className="mt-4">
+                <Chessboard
+                  position={fen}
+                  areArrowsAllowed={true}
+                  boardOrientation={orientation as any}
+                  onPieceDrop={onDrop}
+                  animationDuration={150}
+                  customBoardStyle={{ borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}
+                />
+              </div>
+            </div>
+            <div className="space-y-4">
+              <div className="bg-white rounded-3xl p-4 border shadow-sm">
+                <h2 className="font-semibold mb-2">Moves</h2>
+                <MoveList />
+              </div>
+              <div className="bg-white rounded-3xl p-4 border shadow-sm">
+                <h2 className="font-semibold mb-2">FEN</h2>
+                <div className="p-3 bg-gray-50 rounded-xl border text-sm break-all">{fen}</div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {tab === "bot" && (
+          <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white rounded-3xl p-4 border shadow-sm">
+              <Controls vsBot />
+              <div className="mt-4">
+                <Chessboard
+                  position={fen}
+                  areArrowsAllowed={true}
+                  boardOrientation={orientation as any}
+                  onPieceDrop={onPlayerMoveVsBot}
+                  animationDuration={150}
+                  customBoardStyle={{ borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-3">Bot plays greedy captures; otherwise random legal moves. For a stronger engine later, you can plug in Stockfish WASM.</p>
+            </div>
+            <div className="space-y-4">
+              <div className="bg-white rounded-3xl p-4 border shadow-sm">
+                <h2 className="font-semibold mb-2">Moves</h2>
+                <MoveList />
+              </div>
+              <div className="bg-white rounded-3xl p-4 border shadow-sm">
+                <h2 className="font-semibold mb-2">FEN</h2>
+                <div className="p-3 bg-gray-50 rounded-xl border text-sm break-all">{fen}</div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {tab === "puzzles" && (
+          <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="bg-white rounded-3xl p-4 border shadow-sm">
+              <h2 className="font-semibold mb-3">Lichess Daily Puzzle</h2>
+              {/* Official Lichess daily puzzle embed (theme/pieceSet/bg can be customized) */}
+              <div className="rounded-2xl overflow-hidden border">
+                <iframe
+                  src={`https://lichess.org/training/embed?theme=blue&pieceSet=cburnett&bg=light`}
+                  style={{ width: "100%", height: 520, border: 0 }}
+                  allowFullScreen
+                  title="Lichess Daily Puzzle"
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-3">Puzzles courtesy of Lichess • Embedded per their developer docs.</p>
+            </div>
+            <div className="bg-white rounded-3xl p-4 border shadow-sm space-y-3">
+              <h2 className="font-semibold">Tips</h2>
+              <ul className="list-disc pl-5 text-sm space-y-1">
+                <li>Use the puzzle to warm up, then jump back into a game.</li>
+                <li>Try to calculate forcing lines first: checks, captures, and threats.</li>
+                <li>When you solve it quickly, switch tabs and play against the bot to practice converting advantages.</li>
+              </ul>
+              <div className="text-xs text-gray-500">Want random puzzles or streak/racer modes? You can embed other Lichess puzzle experiences similarly.</div>
+            </div>
+          </section>
+        )}
+
+        <footer className="mt-10 text-xs text-gray-500 grid gap-1">
+          <div>© {new Date().getFullYear()} троянские шахматы · Built for fun and learning.</div>
+          <div>
+            This MVP uses <code>react-chessboard</code> and <code>chess.js</code>. Puzzles are embedded from Lichess (see their developer page for puzzle embed). Please respect the terms of use of each project.
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
+)
+// A free-to-play chess MVP with local play, a simple bot, and free puzzles
+// (embedded from Lichess). Built as a single-file React component.
+// ────────────────────────────────────────────────────────────────────────────────
+
+export default function TrojanChess() {
+  const [tab, setTab] = useState("play"); // play | bot | puzzles
+  const [game, setGame] = useState(() => new Chess());
+  const [orientation, setOrientation] = useState("white");
+  const [fen, setFen] = useState("start");
+  const [moveHistory, setMoveHistory] = useState<string[]>([]);
+  const [status, setStatus] = useState("Welcome! Create or load a game.");
+  const [botThinking, setBotThinking] = useState(false);
+  const [botSide, setBotSide] = useState<"white" | "black">("black");
+  const [promotionPiece, setPromotionPiece] = useState("q");
+
+  // Reset game when switching tabs that involve gameplay
+  useEffect(() => {
+    if (tab === "play" || tab === "bot") {
+      const g = new Chess();
+      setGame(g);
+      setFen(g.fen());
+      setMoveHistory([]);
+      setStatus("New game started.");
+    }
+  }, [tab]);
+
+  // ── Helpers ──────────────────────────────────────────────────────────────────
+  function calcStatus(g: any) {
+    if (g.isCheckmate()) return "Checkmate! " + (g.turn() === "w" ? "Black" : "White") + " wins.";
+    if (g.isDraw()) return "Draw.";
+    if (g.isStalemate()) return "Stalemate.";
+    if (g.isThreefoldRepetition()) return "Draw by repetition.";
+    if (g.isInsufficientMaterial()) return "Draw by insufficient material.";
+    return (g.turn() === "w" ? "White" : "Black") + (g.inCheck() ? " to move (in check)." : " to move.");
+  }
+
+  function safeGameMutate(modifier: (g: any) => void) {
+    setGame((g: any) => {
+      const newGame = new Chess(g.fen());
+      modifier(newGame);
+      setFen(newGame.fen());
+      setMoveHistory(newGame.history());
+      setStatus(calcStatus(newGame));
+      return newGame;
+    });
+  }
+
+  // ── Player vs Player (same device) move handler ──────────────────────────────
+  function onDrop(sourceSquare: string, targetSquare: string, piece: string) {
+    let move: any = null;
+    safeGameMutate((g) => {
+      move = g.move({ from: sourceSquare, to: targetSquare, promotion: promotionPiece });
+    });
+    return move !== null;
+  }
+
+  // ── Very simple BOT (greedy capture; otherwise random legal move) ────────────
+  function chooseBotMove(g: any) {
+    const moves = g.moves({ verbose: true });
+    if (moves.length === 0) return null;
+
+    // Greedy capture first
+    const captureMoves = moves.filter((m: any) => m.flags.includes("c") || m.flags.includes("e"));
+
+    const scorePiece = (p: string) => {
+      const map: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+      return map[p.toLowerCase()] ?? 0;
+    };
+
+    if (captureMoves.length) {
+      captureMoves.sort((a: any, b: any) => (scorePiece((b.captured || "")[0]) - scorePiece((a.captured || "")[0])));
+      return captureMoves[0];
+    }
+
+    // Otherwise random legal
+    return moves[Math.floor(Math.random() * moves.length)];
+  }
+
+  async function onPlayerMoveVsBot(sourceSquare: string, targetSquare: string, piece: string) {
+    let humanMoveOk = false;
+    safeGameMutate((g) => {
+      const move = g.move({ from: sourceSquare, to: targetSquare, promotion: promotionPiece });
+      humanMoveOk = !!move;
+    });
+
+    if (!humanMoveOk) return false;
+
+    // Trigger bot if game isn't over and it's the bot's turn
+    setTimeout(() => {
+      setBotThinking(true);
+      setTimeout(() => {
+        safeGameMutate((g) => {
+          if (g.isGameOver()) return;
+          if ((botSide === "white" && g.turn() !== "w") || (botSide === "black" && g.turn() !== "b")) return;
+          const move = chooseBotMove(g);
+          if (move) g.move(move);
+        });
+        setBotThinking(false);
+      }, 200); // tiny delay for UX
+    }, 50);
+
+    return true;
+  }
+
+  // ── UI building blocks ───────────────────────────────────────────────────────
+  const TabButton = ({ id, children }: { id: string; children: any }) => (
+    <button
+      onClick={() => setTab(id)}
+      className={`px-4 py-2 rounded-2xl text-sm font-medium border transition shadow-sm mr-2 mb-2 ${
+        tab === id ? "bg-black text-white" : "bg-white hover:bg-gray-100"
+      }`}
+    >
+      {children}
+    </button>
+  );
+
+  const Pill = ({ children }: { children: any }) => (
+    <span className="inline-block px-2 py-1 rounded-xl text-xs bg-gray-100 border">{children}</span>
+  );
+
+  const MoveList = () => {
+    const pairs: string[][] = [];
+    for (let i = 0; i < moveHistory.length; i += 2) {
+      pairs.push([moveHistory[i] ?? "", moveHistory[i + 1] ?? ""]);
+    }
+    return (
+      <div className="h-64 overflow-auto p-3 bg-white rounded-2xl border shadow-sm text-sm">
+        <div className="grid grid-cols-3 gap-2">
+          {pairs.map((p, idx) => (
+            <React.Fragment key={idx}>
+              <div className="text-gray-500">{idx + 1}.</div>
+              <div>{p[0]}</div>
+              <div>{p[1]}</div>
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const Controls = ({ vsBot = false }: { vsBot?: boolean }) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-100"
+        onClick={() => {
+          const g = new Chess();
+          setGame(g);
+          setFen(g.fen());
+          setMoveHistory([]);
+          setStatus("New game started.");
+        }}
+      >
+        New game
+      </button>
+      <button
+        className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-100"
+        onClick={() => {
+          safeGameMutate((g) => g.undo());
+        }}
+      >
+        Undo
+      </button>
+      <button
+        className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-100"
+        onClick={() => setOrientation((o) => (o === "white" ? "black" : "white"))}
+      >
+        Flip board
+      </button>
+      <label className="px-3 py-2 rounded-xl bg-white border shadow-sm">
+        Promotion
+        <select
+          value={promotionPiece}
+          onChange={(e) => setPromotionPiece(e.target.value)}
+          className="ml-2 bg-transparent outline-none"
+        >
+          <option value="q">Queen</option>
+          <option value="r">Rook</option>
+          <option value="b">Bishop</option>
+          <option value="n">Knight</option>
+        </select>
+      </label>
+      {vsBot && (
+        <label className="px-3 py-2 rounded-xl bg-white border shadow-sm">
+          Bot plays
+          <select
+            value={botSide}
+            onChange={(e) => setBotSide(e.target.value as any)}
+            className="ml-2 bg-transparent outline-none"
+          >
+            <option value="black">Black</option>
+            <option value="white">White</option>
+          </select>
+        </label>
+      )}
+      <div className="ml-auto"><Pill>{status}</Pill>{vsBot && botThinking && <Pill>Bot thinking…</Pill>}</div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white text-gray-900 antialiased p-4">
+      <div className="max-w-6xl mx-auto">
+        {/* Header */}
+        <header className="flex flex-wrap items-center justify-between gap-3 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-black text-white grid place-items-center text-xl">♞</div>
+            <div>
+              <h1 className="text-2xl font-bold">троянские шахматы</h1>
+              <p className="text-sm text-gray-500">Free-to-play chess • Local play • Simple bot • Lichess puzzles</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <TabButton id="play">Play (2 players)</TabButton>
+            <TabButton id="bot">Play vs Bot</TabButton>
+            <TabButton id="puzzles">Puzzles</TabButton>
+          </div>
+        </header>
+
+        {/* Content */}
+        {tab === "play" && (
+          <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white rounded-3xl p-4 border shadow-sm">
+              <Controls />
+              <div className="mt-4">
+                <Chessboard
+                  position={fen}
+                  areArrowsAllowed={true}
+                  boardOrientation={orientation as any}
+                  onPieceDrop={onDrop}
+                  animationDuration={150}
+                  customBoardStyle={{ borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}
+                />
+              </div>
+            </div>
+            <div className="space-y-4">
+              <div className="bg-white rounded-3xl p-4 border shadow-sm">
+                <h2 className="font-semibold mb-2">Moves</h2>
+                <MoveList />
+              </div>
+              <div className="bg-white rounded-3xl p-4 border shadow-sm">
+                <h2 className="font-semibold mb-2">FEN</h2>
+                <div className="p-3 bg-gray-50 rounded-xl border text-sm break-all">{fen}</div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {tab === "bot" && (
+          <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white rounded-3xl p-4 border shadow-sm">
+              <Controls vsBot />
+              <div className="mt-4">
+                <Chessboard
+                  position={fen}
+                  areArrowsAllowed={true}
+                  boardOrientation={orientation as any}
+                  onPieceDrop={onPlayerMoveVsBot}
+                  animationDuration={150}
+                  customBoardStyle={{ borderRadius: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-3">Bot plays greedy captures; otherwise random legal moves. For a stronger engine later, you can plug in Stockfish WASM.</p>
+            </div>
+            <div className="space-y-4">
+              <div className="bg-white rounded-3xl p-4 border shadow-sm">
+                <h2 className="font-semibold mb-2">Moves</h2>
+                <MoveList />
+              </div>
+              <div className="bg-white rounded-3xl p-4 border shadow-sm">
+                <h2 className="font-semibold mb-2">FEN</h2>
+                <div className="p-3 bg-gray-50 rounded-xl border text-sm break-all">{fen}</div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {tab === "puzzles" && (
+          <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="bg-white rounded-3xl p-4 border shadow-sm">
+              <h2 className="font-semibold mb-3">Lichess Daily Puzzle</h2>
+              {/* Official Lichess daily puzzle embed (theme/pieceSet/bg can be customized) */}
+              <div className="rounded-2xl overflow-hidden border">
+                <iframe
+                  src={`https://lichess.org/training/embed?theme=blue&pieceSet=cburnett&bg=light`}
+                  style={{ width: "100%", height: 520, border: 0 }}
+                  allowFullScreen
+                  title="Lichess Daily Puzzle"
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-3">Puzzles courtesy of Lichess • Embedded per their developer docs.</p>
+            </div>
+            <div className="bg-white rounded-3xl p-4 border shadow-sm space-y-3">
+              <h2 className="font-semibold">Tips</h2>
+              <ul className="list-disc pl-5 text-sm space-y-1">
+                <li>Use the puzzle to warm up, then jump back into a game.</li>
+                <li>Try to calculate forcing lines first: checks, captures, and threats.</li>
+                <li>When you solve it quickly, switch tabs and play against the bot to practice converting advantages.</li>
+              </ul>
+              <div className="text-xs text-gray-500">Want random puzzles or streak/racer modes? You can embed other Lichess puzzle experiences similarly.</div>
+            </div>
+          </section>
+        )}
+
+        <footer className="mt-10 text-xs text-gray-500 grid gap-1">
+          <div>© {new Date().getFullYear()} троянские шахматы · Built for fun and learning.</div>
+          <div>
+            This MVP uses <code>react-chessboard</code> and <code>chess.js</code>. Puzzles are embedded from Lichess (see their developer page for puzzle embed). Please respect the terms of use of each project.
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
